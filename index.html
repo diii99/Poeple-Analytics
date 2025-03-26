@@ -11,9 +11,9 @@
 
 <meta name="author" content="Di" />
 
-<meta name="date" content="2025-03-23" />
+<meta name="date" content="2025-03-26" />
 
-<title>People Analytics</title>
+<title>Untitled</title>
 
 <script>// Pandoc 2.9 adds attributes on both header and div. We remove the former (to
 // be compatible with the behavior of Pandoc < 2.8).
@@ -2850,9 +2850,9 @@ border-radius: 0px;
 
 
 
-<h1 class="title toc-ignore">People Analytics</h1>
+<h1 class="title toc-ignore">Untitled</h1>
 <h4 class="author">Di</h4>
-<h4 class="date">2025-03-23</h4>
+<h4 class="date">2025-03-26</h4>
 
 </div>
 
@@ -2872,7 +2872,9 @@ library(dplyr)
 library(lubridate) # For handling dates
 library(tidyr)     # For data manipulation like pivot_wider
 library(broom)     # For tidying model outputs
-library(car)</code></pre>
+library(car)
+#library(MASS)
+library(lmtest)</code></pre>
 <div id="data-loading" class="section level2" number="1.1">
 <h2><span class="header-section-number">1.1</span> Data Loading</h2>
 <pre class="r"><code>employee_data &lt;- read.csv(&quot;Employee.csv&quot;)
@@ -3083,7 +3085,7 @@ attrition based on multiple factors simultaneously.</p>
 <pre class="r"><code># Define fixed predictors for demonstration
 selected_preds_attr_fixed &lt;- c(&quot;Age&quot;, &quot;OverTime&quot;, &quot;JobSatisfaction&quot;, &quot;Salary&quot;, &quot;YearsAtCompany&quot;, &quot;MaritalStatus&quot;, &quot;DistanceFromHome..KM.&quot;, &quot;EnvironmentSatisfaction&quot;)
 
-
+# Ensure these predictors exist in the data
 valid_predictors_attr_fixed &lt;- intersect(selected_preds_attr_fixed, names(combined_data))
 
 if (length(valid_predictors_attr_fixed) == 0) {
@@ -3096,10 +3098,11 @@ if (length(valid_predictors_attr_fixed) == 0) {
     cat(&quot;--- Logistic Regression Model for Attrition ---\n&quot;)
     cat(&quot;Formula:&quot;, formula_str_attr, &quot;\n\n&quot;)
 
-    # Filter data to include only complete cases for the selected predictors and outcome
+    # CORRECTED AGAIN: Explicitly use dplyr::select to avoid masking
     model_data_attr &lt;- combined_data %&gt;%
-        select(Attrition, all_of(valid_predictors_attr_fixed)) %&gt;%
-        na.omit()
+        # Use dplyr::select explicitly
+        dplyr::select(any_of(c(&quot;Attrition&quot;, valid_predictors_attr_fixed))) %&gt;%
+        na.omit() # Remove rows with NA in *any* selected column
 
     if(nrow(model_data_attr) == 0) {
         cat(&quot;No complete cases found for the selected predictors and outcome. Cannot fit model.\n&quot;)
@@ -3108,6 +3111,7 @@ if (length(valid_predictors_attr_fixed) == 0) {
 
         # Fit the model
         logistic_model_attr &lt;- tryCatch({
+            # Use the filtered model_data_attr which only contains necessary columns
             glm(formula_obj_attr, data = model_data_attr, family = binomial(link = &quot;logit&quot;))
         }, error = function(e) {
             cat(&quot;Error fitting model:&quot;, conditionMessage(e), &quot;\n&quot;)
@@ -3213,21 +3217,19 @@ Analysis</h1>
 <h2><span class="header-section-number">3.1</span> Correlation
 Analysis</h2>
 <p>Examine correlations between satisfaction metrics, work-life balance,
-training, and manager ratings. Note: Treating ordinal factors as numeric
-for correlation should be done cautiously and assumes somewhat linear
-relationships.</p>
-<pre class="r"><code># Convert factors to numeric *within this chunk&#39;s scope* if needed for correlation
+training, and manager ratings.</p>
+<pre class="r"><code># Data preparation remains the same, selecting numeric/pseudo-numeric versions
 corr_data_perf &lt;- combined_data %&gt;%
   mutate(
-     SelfRatingNumeric = as.numeric(SelfRating) # Convert here if needed
-     # Ensure other numeric versions exist from cleaning step
+     SelfRatingNumeric = as.numeric(SelfRating) # Convert for correlation if desired
      ) %&gt;%
-  # Select relevant numeric/numeric-converted columns
-  select(any_of(c(&quot;ManagerRatingNumeric&quot;, &quot;SelfRatingNumeric&quot;, &quot;JobSatisfactionNumeric&quot;,
+  # Explicitly use dplyr::select
+  dplyr::select(any_of(c(&quot;ManagerRatingNumeric&quot;, &quot;SelfRatingNumeric&quot;, &quot;JobSatisfactionNumeric&quot;,
                   &quot;EnvironmentSatisfactionNumeric&quot;, &quot;RelationshipSatisfactionNumeric&quot;,
                   &quot;WorkLifeBalanceNumeric&quot;, &quot;TrainingOpportunitiesTaken&quot;, &quot;Salary&quot;,
                   &quot;YearsAtCompany&quot;, &quot;YearsInMostRecentRole&quot;, &quot;Age&quot;, &quot;DistanceFromHome..KM.&quot;))) %&gt;%
-  select_if(is.numeric) # Keep only numeric columns
+  # Keep select_if for now, though superseded by `where()` or `across()`
+  select_if(is.numeric)
 
 valid_corr_vars &lt;- names(corr_data_perf)
 
@@ -3238,170 +3240,176 @@ if (length(selected_vars_corr_fixed) &lt; 2) {
     cat(&quot;Need at least two valid variables for correlation.&quot;)
 } else {
     # Ensure selected variables exist in the numeric dataset
+    # Base R subsetting is not affected by masking
     selected_data_corr &lt;- corr_data_perf[, selected_vars_corr_fixed, drop = FALSE]
 
-    # Calculate correlation matrix
-    cor_matrix &lt;- cor(selected_data_corr, use = &quot;pairwise.complete.obs&quot;) # Handles missing data
+    # Calculate Spearman&#39;s rank correlation matrix
+    # Handles missing data pair-wise and uses ranks (suitable for ordinal)
+    cor_matrix &lt;- cor(selected_data_corr, use = &quot;pairwise.complete.obs&quot;, method = &quot;spearman&quot;)
 
-    cat(&quot;--- Correlation Matrix ---\n&quot;)
+    cat(&quot;--- Spearman&#39;s Rank Correlation Matrix (rho) ---\n&quot;)
     cat(&quot;Variables:&quot;, paste(selected_vars_corr_fixed, collapse=&quot;, &quot;), &quot;\n\n&quot;)
     print(round(cor_matrix, 3))
 
-    cat(&quot;\nInterpretation: Values close to 1 (+ve), -1 (-ve), 0 (weak).\n&quot;)
-    cat(&quot;Note: Correlations involving ordinal variables treated as numeric should be interpreted cautiously.\n&quot;)
+    cat(&quot;\nInterpretation: Spearman&#39;s rho measures the strength and direction of monotonic association between variables.\n&quot;)
+    cat(&quot;Values close to 1 indicate strong positive monotonic relationship, close to -1 strong negative monotonic relationship, close to 0 weak monotonic relationship.\n&quot;)
 }</code></pre>
-<pre><code>## --- Correlation Matrix ---
+<pre><code>## --- Spearman&#39;s Rank Correlation Matrix (rho) ---
 ## Variables: ManagerRatingNumeric, JobSatisfactionNumeric, EnvironmentSatisfactionNumeric, WorkLifeBalanceNumeric, YearsAtCompany, Salary 
 ## 
 ##                                ManagerRatingNumeric JobSatisfactionNumeric
 ## ManagerRatingNumeric                          1.000                 -0.006
 ## JobSatisfactionNumeric                       -0.006                  1.000
-## EnvironmentSatisfactionNumeric                0.017                  0.163
-## WorkLifeBalanceNumeric                       -0.004                  0.081
-## YearsAtCompany                                0.023                 -0.012
-## Salary                                       -0.012                  0.018
+## EnvironmentSatisfactionNumeric                0.016                  0.125
+## WorkLifeBalanceNumeric                       -0.005                  0.067
+## YearsAtCompany                                0.023                 -0.014
+## Salary                                        0.002                  0.008
 ##                                EnvironmentSatisfactionNumeric
-## ManagerRatingNumeric                                    0.017
-## JobSatisfactionNumeric                                  0.163
+## ManagerRatingNumeric                                    0.016
+## JobSatisfactionNumeric                                  0.125
 ## EnvironmentSatisfactionNumeric                          1.000
-## WorkLifeBalanceNumeric                                  0.188
-## YearsAtCompany                                         -0.004
-## Salary                                                  0.002
+## WorkLifeBalanceNumeric                                  0.161
+## YearsAtCompany                                         -0.008
+## Salary                                                  0.006
 ##                                WorkLifeBalanceNumeric YearsAtCompany Salary
-## ManagerRatingNumeric                           -0.004          0.023 -0.012
-## JobSatisfactionNumeric                          0.081         -0.012  0.018
-## EnvironmentSatisfactionNumeric                  0.188         -0.004  0.002
-## WorkLifeBalanceNumeric                          1.000          0.007 -0.014
-## YearsAtCompany                                  0.007          1.000  0.106
-## Salary                                         -0.014          0.106  1.000
+## ManagerRatingNumeric                           -0.005          0.023  0.002
+## JobSatisfactionNumeric                          0.067         -0.014  0.008
+## EnvironmentSatisfactionNumeric                  0.161         -0.008  0.006
+## WorkLifeBalanceNumeric                          1.000          0.004 -0.020
+## YearsAtCompany                                  0.004          1.000  0.234
+## Salary                                         -0.020          0.234  1.000
 ## 
-## Interpretation: Values close to 1 (+ve), -1 (-ve), 0 (weak).
-## Note: Correlations involving ordinal variables treated as numeric should be interpreted cautiously.</code></pre>
+## Interpretation: Spearman&#39;s rho measures the strength and direction of monotonic association between variables.
+## Values close to 1 indicate strong positive monotonic relationship, close to -1 strong negative monotonic relationship, close to 0 weak monotonic relationship.</code></pre>
 </div>
-<div id="regression-model-for-manager-rating" class="section level2" number="3.2">
-<h2><span class="header-section-number">3.2</span> Regression Model for
-Manager Rating</h2>
-<p>Build a linear regression model to predict ManagerRating based on
-potential influencing factors. Note: ManagerRating is ordinal; linear
-regression treats it as continuous and assumes equal intervals between
-rating levels. Results should be interpreted cautiously. Ordinal
-logistic regression might be more appropriate but is more complex to
-implement and interpret.</p>
-<pre class="r"><code># Define fixed predictors for demonstration
-selected_preds_perf_fixed &lt;- intersect(c(&quot;JobSatisfaction&quot;, &quot;EnvironmentSatisfaction&quot;, &quot;WorkLifeBalance&quot;, &quot;YearsAtCompany&quot;, &quot;SelfRating&quot;, &quot;TrainingOpportunitiesTaken&quot;), names(combined_data))
+<div id="ordinal-logistic-regression-model-for-manager-rating" class="section level2" number="3.2">
+<h2><span class="header-section-number">3.2</span> Ordinal Logistic
+Regression Model for Manager Rating</h2>
+<p>Build an ordinal logistic regression model to predict the ordered
+ManagerRating based on potential influencing factors. This is more
+appropriate than linear regression for an ordinal outcome.</p>
+<pre class="r"><code># Ensure the outcome variable is the original ordered factor
+outcome_var_perf_ord &lt;- &quot;ManagerRating&quot;
 
-if (length(selected_preds_perf_fixed) == 0) {
+# Define fixed predictors (use original factors where appropriate)
+selected_preds_perf_ord_fixed &lt;- intersect(c(&quot;JobSatisfaction&quot;, &quot;EnvironmentSatisfaction&quot;, &quot;WorkLifeBalance&quot;, &quot;YearsAtCompany&quot;, &quot;SelfRating&quot;, &quot;TrainingOpportunitiesTaken&quot;), names(combined_data))
+
+if (length(selected_preds_perf_ord_fixed) == 0) {
     cat(&quot;No valid fixed predictors found for the Manager Rating model.&quot;)
-} else if (!&quot;ManagerRatingNumeric&quot; %in% names(combined_data) || !is.numeric(combined_data$ManagerRatingNumeric)) {
-    cat(&quot;Outcome variable &#39;ManagerRatingNumeric&#39; not found or not numeric.&quot;)
+# Ensure the outcome variable is an ordered factor
+} else if (!outcome_var_perf_ord %in% names(combined_data) || !is.ordered(combined_data[[outcome_var_perf_ord]])) {
+    cat(&quot;Outcome variable &#39;&quot;, outcome_var_perf_ord, &quot;&#39; not found or is not an ordered factor.&quot;)
 } else {
-    # Create formula
-    formula_str_perf &lt;- paste(&quot;ManagerRatingNumeric ~&quot;, paste(selected_preds_perf_fixed, collapse = &quot; + &quot;))
-    formula_obj_perf &lt;- as.formula(formula_str_perf)
+    # Create formula using the original ORDERED factor as the outcome
+    formula_str_perf_ord &lt;- paste(outcome_var_perf_ord, &quot;~&quot;, paste(selected_preds_perf_ord_fixed, collapse = &quot; + &quot;))
+    formula_obj_perf_ord &lt;- as.formula(formula_str_perf_ord)
 
-    cat(&quot;--- Linear Regression Model for Manager Rating ---\n&quot;)
-    cat(&quot;Formula:&quot;, formula_str_perf, &quot;\n&quot;)
-    cat(&quot;Note: Treating ordinal ManagerRating as numeric. Interpret cautiously.\n\n&quot;)
+    cat(&quot;--- Ordinal Logistic Regression Model for Manager Rating ---\n&quot;)
+    cat(&quot;Formula:&quot;, formula_str_perf_ord, &quot;\n\n&quot;)
 
-    # Filter data for complete cases
-    model_data_perf &lt;- combined_data %&gt;%
-        select(ManagerRatingNumeric, all_of(selected_preds_perf_fixed)) %&gt;%
-        na.omit()
+    # Filter data using dplyr::select explicitly
+    model_data_perf_ord &lt;- combined_data %&gt;%
+        dplyr::select(all_of(c(outcome_var_perf_ord, selected_preds_perf_ord_fixed))) %&gt;%
+        na.omit() # Remove rows with NA in any selected column
 
-    if(nrow(model_data_perf) == 0) {
-        cat(&quot;No complete cases found for the selected predictors. Cannot fit model.\n&quot;)
+    # Ensure sufficient data and levels in the outcome
+    if(nrow(model_data_perf_ord) == 0) {
+        cat(&quot;No complete cases found for the selected variables. Cannot fit model.\n&quot;)
+    } else if (nlevels(model_data_perf_ord[[outcome_var_perf_ord]]) &lt; 2) {
+        cat(&quot;Outcome variable has fewer than 2 levels after removing NAs. Cannot fit model.\n&quot;)
     } else {
-        cat(paste(&quot;Fitting model using&quot;, nrow(model_data_perf), &quot;complete observations.\n\n&quot;))
+        cat(paste(&quot;Fitting model using&quot;, nrow(model_data_perf_ord), &quot;complete observations.\n\n&quot;))
 
-        # Fit the model
-        lm_model_perf &lt;- tryCatch({
-            lm(formula_obj_perf, data = model_data_perf)
+        # Fit the Ordinal Logistic Regression model using polr from MASS package
+        polr_model_perf &lt;- tryCatch({
+            # Increased maxit slightly, might help sometimes
+            polr(formula_obj_perf_ord, data = model_data_perf_ord, Hess = TRUE, control = list(maxit = 200))
+        }, warning = function(w){
+            cat(&quot;Warning during model fitting:&quot;, conditionMessage(w), &quot;\n&quot;)
+            suppressWarnings(polr(formula_obj_perf_ord, data = model_data_perf_ord, Hess = TRUE, control = list(maxit = 200)))
         }, error = function(e) {
-            cat(&quot;Error fitting model:&quot;, conditionMessage(e), &quot;\n&quot;)
+            cat(&quot;Error fitting Ordinal Logistic Regression model:&quot;, conditionMessage(e), &quot;\n&quot;)
             NULL
         })
 
-        if (!is.null(lm_model_perf)) {
-            cat(&quot;Model Summary:\n&quot;)
-            print(summary(lm_model_perf))
+        if (!is.null(polr_model_perf)) {
 
-            cat(&quot;\nCoefficients (Tidy):\n&quot;)
-            print(tidy(lm_model_perf, conf.int = TRUE))
+            # *** ADDED: Check convergence status ***
+            converged &lt;- FALSE
+            if (polr_model_perf$convergence == 0) {
+                 # Further check Hessian if possible (optional but good)
+                 hess_eigen &lt;- tryCatch(eigen(polr_model_perf$Hessian)$values, error = function(e) NULL)
+                 if (!is.null(hess_eigen) &amp;&amp; all(hess_eigen &gt; 1e-6)) { # Check if positive definite
+                      converged &lt;- TRUE
+                 } else if (!is.null(hess_eigen)) {
+                     cat(&quot;\nWarning: Hessian matrix is not positive definite. Convergence suspect.\n&quot;)
+                 } else {
+                     cat(&quot;\nWarning: Could not check Hessian matrix eigenvalues.\n&quot;)
+                 }
+            } else {
+                cat(&quot;\nWarning: polr model did not converge properly (code:&quot;, polr_model_perf$convergence, &quot;). Results are unreliable.\n&quot;)
+            }
+            # *** END ADDED check ***
 
-            cat(&quot;\nInterpretation: Look for significant predictors (p &lt; 0.05). &#39;estimate&#39; shows change in numeric Manager Rating per unit change in predictor.\n&quot;)
-            cat(&quot;Adjusted R-squared indicates proportion of variance explained.\n&quot;)
+            cat(&quot;Model Summary (Coefficients are log-odds):\n&quot;)
+            print(summary(polr_model_perf))
+
+            cat(&quot;\nCoefficients with Standard Errors and P-values (from coeftest):\n&quot;)
+            coeffs_test &lt;- tryCatch(coeftest(polr_model_perf), error = function(e) {
+                cat(&quot;Error calculating p-values using coeftest:&quot;, conditionMessage(e), &quot;\n&quot;)
+                NULL
+            })
+            if (!is.null(coeffs_test)) {
+               print(coeffs_test)
+            } else {
+               cat(&quot;Could not calculate p-values using coeftest (possibly due to convergence issues).\n&quot;)
+            }
+
+            cat(&quot;\nOdds Ratios (Exponentiated Coefficients):\n&quot;)
+            # Try to get CIs, but fall back if profiling fails
+            tidy_coeffs_or &lt;- tryCatch({
+                 tidy(polr_model_perf, exponentiate = TRUE, conf.int = TRUE)
+            }, error = function(e) {
+                 cat(&quot;\nError calculating confidence intervals (likely due to convergence issue reported by profile.polr):\n&quot;, conditionMessage(e), &quot;\n&quot;)
+                 cat(&quot;Attempting to get odds ratios without confidence intervals.\n&quot;)
+                 # Fallback: tidy without CIs
+                 tryCatch({
+                     tidy(polr_model_perf, exponentiate = TRUE, conf.int = FALSE)
+                 }, error = function(e2) {
+                     cat(&quot;Error getting odds ratios even without CIs:&quot;, conditionMessage(e2), &quot;\n&quot;)
+                     NULL # Return NULL if even this fails
+                 })
+            })
+
+            if (!is.null(tidy_coeffs_or)) {
+                print(tidy_coeffs_or)
+            } else {
+                cat(&quot;Could not retrieve odds ratios.\n&quot;)
+            }
+
+            # Only print interpretation if we think it converged
+            if (converged) {
+                cat(&quot;\nInterpretation of Odds Ratios (OR) (use cautiously if warnings occurred):\n&quot;)
+                cat(&quot;- OR &gt; 1: Odds of *higher* Manager Rating category increase.\n&quot;)
+                cat(&quot;- OR &lt; 1: Odds of *higher* Manager Rating category decrease.\n&quot;)
+                # ... (rest of interpretation) ...
+            } else {
+                 cat(&quot;\nInterpretation skipped due to likely convergence failure.\n&quot;)
+            }
+            cat(&quot;\nAIC:&quot;, AIC(polr_model_perf), &quot;\n&quot;)
 
         } else {
-            cat(&quot;Model could not be fitted.\n&quot;)
+            cat(&quot;Ordinal Logistic Regression model could not be fitted.\n&quot;)
         }
     }
 }</code></pre>
-<pre><code>## --- Linear Regression Model for Manager Rating ---
-## Formula: ManagerRatingNumeric ~ JobSatisfaction + EnvironmentSatisfaction + WorkLifeBalance + YearsAtCompany + SelfRating + TrainingOpportunitiesTaken 
-## Note: Treating ordinal ManagerRating as numeric. Interpret cautiously.
+<pre><code>## --- Ordinal Logistic Regression Model for Manager Rating ---
+## Formula: ManagerRating ~ JobSatisfaction + EnvironmentSatisfaction + WorkLifeBalance + YearsAtCompany + SelfRating + TrainingOpportunitiesTaken 
 ## 
 ## Fitting model using 1280 complete observations.
 ## 
-## Model Summary:
-## 
-## Call:
-## lm(formula = formula_obj_perf, data = model_data_perf)
-## 
-## Residuals:
-##     Min      1Q  Median      3Q     Max 
-## -0.6769 -0.4870 -0.3600  0.4998  0.7374 
-## 
-## Coefficients:
-##                              Estimate Std. Error t value Pr(&gt;|t|)    
-## (Intercept)                 2.5103748  0.0370494  67.757   &lt;2e-16 ***
-## JobSatisfaction.L          -0.0949456  0.0554058  -1.714   0.0868 .  
-## JobSatisfaction.Q           0.0450375  0.0474773   0.949   0.3430    
-## JobSatisfaction.C          -0.0407184  0.0367746  -1.107   0.2684    
-## JobSatisfaction^4           0.0555682  0.0290442   1.913   0.0559 .  
-## EnvironmentSatisfaction.L   0.0858773  0.0562146   1.528   0.1268    
-## EnvironmentSatisfaction.Q  -0.0592155  0.0460708  -1.285   0.1989    
-## EnvironmentSatisfaction.C   0.0044474  0.0497601   0.089   0.9288    
-## EnvironmentSatisfaction^4  -0.0238159  0.0389352  -0.612   0.5409    
-## WorkLifeBalance.L          -0.0297033  0.0567694  -0.523   0.6009    
-## WorkLifeBalance.Q           0.0367421  0.0488470   0.752   0.4521    
-## WorkLifeBalance.C           0.0376861  0.0372200   1.013   0.3115    
-## WorkLifeBalance^4          -0.0565808  0.0297430  -1.902   0.0574 .  
-## YearsAtCompany             -0.0005218  0.0046044  -0.113   0.9098    
-## SelfRating.L                1.4534044  0.0245686  59.157   &lt;2e-16 ***
-## SelfRating.Q               -0.0031494  0.0240451  -0.131   0.8958    
-## TrainingOpportunitiesTaken -0.0101063  0.0151115  -0.669   0.5038    
-## ---
-## Signif. codes:  0 &#39;***&#39; 0.001 &#39;**&#39; 0.01 &#39;*&#39; 0.05 &#39;.&#39; 0.1 &#39; &#39; 1
-## 
-## Residual standard error: 0.4994 on 1263 degrees of freedom
-## Multiple R-squared:  0.738,  Adjusted R-squared:  0.7347 
-## F-statistic: 222.4 on 16 and 1263 DF,  p-value: &lt; 2.2e-16
-## 
-## 
-## Coefficients (Tidy):
-## # A tibble: 17 × 7
-##    term                  estimate std.error statistic p.value conf.low conf.high
-##    &lt;chr&gt;                    &lt;dbl&gt;     &lt;dbl&gt;     &lt;dbl&gt;   &lt;dbl&gt;    &lt;dbl&gt;     &lt;dbl&gt;
-##  1 (Intercept)            2.51e+0   0.0370    67.8     0       2.44      2.58   
-##  2 JobSatisfaction.L     -9.49e-2   0.0554    -1.71    0.0868 -0.204     0.0138 
-##  3 JobSatisfaction.Q      4.50e-2   0.0475     0.949   0.343  -0.0481    0.138  
-##  4 JobSatisfaction.C     -4.07e-2   0.0368    -1.11    0.268  -0.113     0.0314 
-##  5 JobSatisfaction^4      5.56e-2   0.0290     1.91    0.0559 -0.00141   0.113  
-##  6 EnvironmentSatisfact…  8.59e-2   0.0562     1.53    0.127  -0.0244    0.196  
-##  7 EnvironmentSatisfact… -5.92e-2   0.0461    -1.29    0.199  -0.150     0.0312 
-##  8 EnvironmentSatisfact…  4.45e-3   0.0498     0.0894  0.929  -0.0932    0.102  
-##  9 EnvironmentSatisfact… -2.38e-2   0.0389    -0.612   0.541  -0.100     0.0526 
-## 10 WorkLifeBalance.L     -2.97e-2   0.0568    -0.523   0.601  -0.141     0.0817 
-## 11 WorkLifeBalance.Q      3.67e-2   0.0488     0.752   0.452  -0.0591    0.133  
-## 12 WorkLifeBalance.C      3.77e-2   0.0372     1.01    0.311  -0.0353    0.111  
-## 13 WorkLifeBalance^4     -5.66e-2   0.0297    -1.90    0.0574 -0.115     0.00177
-## 14 YearsAtCompany        -5.22e-4   0.00460   -0.113   0.910  -0.00955   0.00851
-## 15 SelfRating.L           1.45e+0   0.0246    59.2     0       1.41      1.50   
-## 16 SelfRating.Q          -3.15e-3   0.0240    -0.131   0.896  -0.0503    0.0440 
-## 17 TrainingOpportunitie… -1.01e-2   0.0151    -0.669   0.504  -0.0398    0.0195 
-## 
-## Interpretation: Look for significant predictors (p &lt; 0.05). &#39;estimate&#39; shows change in numeric Manager Rating per unit change in predictor.
-## Adjusted R-squared indicates proportion of variance explained.</code></pre>
+## Error fitting Ordinal Logistic Regression model: could not find function &quot;polr&quot; 
+## Ordinal Logistic Regression model could not be fitted.</code></pre>
 </div>
 <div id="comparing-ratingssatisfaction-across-groups-anova" class="section level2" number="3.3">
 <h2><span class="header-section-number">3.3</span> Comparing
@@ -3620,133 +3628,90 @@ if (!outcome_anova_satisfaction_fixed %in% names(combined_data) || !group_anova_
 ## 
 ## No significant difference in JobSatisfactionNumeric found across groups (p = 0.373 ).</code></pre>
 </div>
-<div id="linear-regression-model-for-satisfaction" class="section level2" number="4.2">
-<h2><span class="header-section-number">4.2</span> Linear Regression
-Model for Satisfaction</h2>
-<p>Model a selected satisfaction metric based on multiple predictors to
-understand the influence of various factors simultaneously. Note:
-Satisfaction is ordinal; linear regression treats it as continuous.
-Interpret results cautiously.</p>
-<pre class="r"><code># Define fixed outcome and predictors
-selected_outcome_sat_lm_fixed &lt;- &quot;JobSatisfactionNumeric&quot;
-selected_preds_sat_lm_fixed &lt;- intersect(c(&quot;Age&quot;, &quot;OverTime&quot;, &quot;JobRole&quot;, &quot;YearsWithCurrManager&quot;, &quot;WorkLifeBalance&quot;, &quot;Salary&quot;, &quot;ManagerRatingNumeric&quot;), names(combined_data))
+<div id="ordinal-logistic-regression-model-for-satisfaction" class="section level2" number="4.2">
+<h2><span class="header-section-number">4.2</span> Ordinal Logistic
+Regression Model for Satisfaction</h2>
+<p>Model a selected satisfaction metric (which is ordinal) based on
+multiple predictors using Ordinal Logistic Regression.</p>
+<pre class="r"><code># Define fixed outcome (use the original ORDERED factor)
+selected_outcome_sat_ord_fixed &lt;- &quot;JobSatisfaction&quot; # e.g., JobSatisfaction, EnvironmentSatisfaction, RelationshipSatisfaction
+
+# Define fixed predictors (Using ManagerRating factor instead of numeric)
+selected_preds_sat_ord_fixed &lt;- intersect(c(&quot;Age&quot;, &quot;OverTime&quot;, &quot;JobRole&quot;, &quot;YearsWithCurrManager&quot;, &quot;WorkLifeBalance&quot;, &quot;Salary&quot;, &quot;ManagerRating&quot;), names(combined_data)) # Use ManagerRating factor
 
 # Checks
-if (length(selected_preds_sat_lm_fixed) == 0) {
+if (length(selected_preds_sat_ord_fixed) == 0) {
     cat(&quot;No valid fixed predictors found for the Satisfaction model.&quot;)
-} else if (!selected_outcome_sat_lm_fixed %in% names(combined_data) || !is.numeric(combined_data[[selected_outcome_sat_lm_fixed]])) {
-    cat(paste(&quot;Outcome variable&quot;, selected_outcome_sat_lm_fixed, &quot;not found or not numeric.\n&quot;))
+# Check if outcome exists and is an ordered factor
+} else if (!selected_outcome_sat_ord_fixed %in% names(combined_data) || !is.ordered(combined_data[[selected_outcome_sat_ord_fixed]])) {
+    cat(paste(&quot;Outcome variable &#39;&quot;, selected_outcome_sat_ord_fixed, &quot;&#39; not found or is not an ordered factor.\n&quot;))
 } else {
-    # Create formula
-    formula_str_satisfaction &lt;- paste(selected_outcome_sat_lm_fixed, &quot;~&quot;, paste(selected_preds_sat_lm_fixed, collapse = &quot; + &quot;))
-    formula_obj_satisfaction &lt;- as.formula(formula_str_satisfaction)
+    # Create formula using the original ORDERED factor
+    formula_str_satisfaction_ord &lt;- paste(selected_outcome_sat_ord_fixed, &quot;~&quot;, paste(selected_preds_sat_ord_fixed, collapse = &quot; + &quot;))
+    formula_obj_satisfaction_ord &lt;- as.formula(formula_str_satisfaction_ord)
 
-    cat(paste(&quot;--- Linear Regression Model for&quot;, selected_outcome_sat_lm_fixed, &quot;---\n&quot;))
-    cat(&quot;Formula:&quot;, formula_str_satisfaction, &quot;\n&quot;)
-    cat(&quot;Note: Treating ordinal satisfaction score as numeric. Interpret with caution.\n\n&quot;)
+    cat(paste(&quot;--- Ordinal Logistic Regression Model for&quot;, selected_outcome_sat_ord_fixed, &quot;---\n&quot;))
+    cat(&quot;Formula:&quot;, formula_str_satisfaction_ord, &quot;\n\n&quot;)
 
-    # Filter data
-    model_data_satisfaction &lt;- combined_data %&gt;%
-        select(all_of(c(selected_outcome_sat_lm_fixed, selected_preds_sat_lm_fixed))) %&gt;%
+    # Filter data for complete cases
+    model_data_satisfaction_ord &lt;- combined_data %&gt;%
+        select(all_of(c(selected_outcome_sat_ord_fixed, selected_preds_sat_ord_fixed))) %&gt;%
         na.omit()
 
-    if(nrow(model_data_satisfaction) == 0) {
-        cat(&quot;No complete cases found for the selected predictors. Cannot fit model.\n&quot;)
+    # Check data sufficiency
+    if(nrow(model_data_satisfaction_ord) == 0) {
+        cat(&quot;No complete cases found for the selected variables. Cannot fit model.\n&quot;)
+     } else if (nlevels(model_data_satisfaction_ord[[selected_outcome_sat_ord_fixed]]) &lt; 2) {
+        cat(&quot;Outcome variable has fewer than 2 levels after removing NAs. Cannot fit model.\n&quot;)
     } else {
-        cat(paste(&quot;Fitting model using&quot;, nrow(model_data_satisfaction), &quot;complete observations.\n\n&quot;))
+        cat(paste(&quot;Fitting model using&quot;, nrow(model_data_satisfaction_ord), &quot;complete observations.\n\n&quot;))
 
-        # Fit the model
-        lm_model_satisfaction &lt;- tryCatch({
-            lm(formula_obj_satisfaction, data = model_data_satisfaction)
+        # Fit the Ordinal Logistic Regression model
+        polr_model_satisfaction &lt;- tryCatch({
+            polr(formula_obj_satisfaction_ord, data = model_data_satisfaction_ord, Hess = TRUE)
+         }, warning = function(w){
+            cat(&quot;Warning during model fitting:&quot;, conditionMessage(w), &quot;\n&quot;)
+            suppressWarnings(polr(formula_obj_satisfaction_ord, data = model_data_satisfaction_ord, Hess = TRUE))
         }, error = function(e) {
-            cat(&quot;Error fitting model:&quot;, conditionMessage(e), &quot;\n&quot;)
+            cat(&quot;Error fitting Ordinal Logistic Regression model:&quot;, conditionMessage(e), &quot;\n&quot;)
             NULL
         })
 
-        if (!is.null(lm_model_satisfaction)) {
-            cat(&quot;Model Summary:\n&quot;)
-            print(summary(lm_model_satisfaction))
+        if (!is.null(polr_model_satisfaction)) {
+            cat(&quot;Model Summary (Coefficients are log-odds):\n&quot;)
+            print(summary(polr_model_satisfaction))
 
-            cat(&quot;\nCoefficients (Tidy):\n&quot;)
-            print(tidy(lm_model_satisfaction, conf.int = TRUE))
+            cat(&quot;\nCoefficients with Standard Errors and P-values (from coeftest):\n&quot;)
+            coeffs_test_sat &lt;- tryCatch(coeftest(polr_model_satisfaction), error = function(e) NULL)
+             if (!is.null(coeffs_test_sat)) {
+               print(coeffs_test_sat)
+            } else {
+               cat(&quot;Could not calculate p-values using coeftest.\n&quot;)
+            }
 
-            cat(&quot;\nInterpretation: Look for significant predictors (p &lt; 0.05).\n&quot;)
-            cat(&quot;- Estimate shows change in numeric satisfaction score per unit change in predictor.\n&quot;)
-            cat(&quot;- Interpret cautiously due to ordinal nature of outcome.\n&quot;)
-            cat(&quot;- Adjusted R-squared indicates proportion of variance explained.\n&quot;)
+            cat(&quot;\nOdds Ratios (Exponentiated Coefficients):\n&quot;)
+            tidy_coeffs_or_sat &lt;- tidy(polr_model_satisfaction, exponentiate = TRUE, conf.int = TRUE)
+            print(tidy_coeffs_or_sat)
+
+            cat(&quot;\nInterpretation of Odds Ratios (OR):\n&quot;)
+            cat(&quot;- OR &gt; 1: Odds of being in a *higher* satisfaction category increase.\n&quot;)
+            cat(&quot;- OR &lt; 1: Odds of being in a *higher* satisfaction category decrease.\n&quot;)
+            cat(&quot;- Confidence interval includes 1: Predictor likely not statistically significant (check p-value).\n&quot;)
+            cat(&quot;- Intercepts define boundaries between satisfaction categories (log-odds scale).\n&quot;)
+            cat(&quot;\nAIC:&quot;, AIC(polr_model_satisfaction), &quot;\n&quot;)
 
         } else {
-            cat(&quot;Model could not be fitted.\n&quot;)
+            cat(&quot;Ordinal Logistic Regression model could not be fitted.\n&quot;)
         }
     }
 }</code></pre>
-<pre><code>## --- Linear Regression Model for JobSatisfactionNumeric ---
-## Formula: JobSatisfactionNumeric ~ Age + OverTime + JobRole + YearsWithCurrManager + WorkLifeBalance + Salary + ManagerRatingNumeric 
-## Note: Treating ordinal satisfaction score as numeric. Interpret with caution.
+<pre><code>## --- Ordinal Logistic Regression Model for JobSatisfaction ---
+## Formula: JobSatisfaction ~ Age + OverTime + JobRole + YearsWithCurrManager + WorkLifeBalance + Salary + ManagerRating 
 ## 
 ## Fitting model using 1280 complete observations.
 ## 
-## Model Summary:
-## 
-## Call:
-## lm(formula = formula_obj_satisfaction, data = model_data_satisfaction)
-## 
-## Residuals:
-##     Min      1Q  Median      3Q     Max 
-## -2.5368 -1.0573 -0.2145  0.7305  2.5449 
-## 
-## Coefficients:
-##                                    Estimate Std. Error t value Pr(&gt;|t|)    
-## (Intercept)                       3.227e+00  2.727e-01  11.836  &lt; 2e-16 ***
-## Age                              -6.821e-03  5.279e-03  -1.292 0.196538    
-## OverTimeYes                       3.186e-02  7.117e-02   0.448 0.654510    
-## JobRoleData Scientist             2.201e-01  2.435e-01   0.904 0.366224    
-## JobRoleEngineering Manager        1.618e-01  2.181e-01   0.742 0.458203    
-## JobRoleHR Business Partner       -7.783e-01  5.392e-01  -1.443 0.149150    
-## JobRoleHR Executive               2.196e-01  3.189e-01   0.689 0.491264    
-## JobRoleHR Manager                 3.326e-01  6.819e-01   0.488 0.625854    
-## JobRoleMachine Learning Engineer  6.389e-02  2.300e-01   0.278 0.781233    
-## JobRoleManager                    2.205e-01  2.628e-01   0.839 0.401636    
-## JobRoleRecruiter                 -7.697e-02  3.456e-01  -0.223 0.823820    
-## JobRoleSales Executive            2.432e-01  2.195e-01   1.108 0.268131    
-## JobRoleSales Representative      -1.189e-01  2.733e-01  -0.435 0.663744    
-## JobRoleSenior Software Engineer   2.144e-01  2.326e-01   0.922 0.356762    
-## JobRoleSoftware Engineer          2.071e-01  2.440e-01   0.849 0.396228    
-## YearsWithCurrManager             -1.726e-03  1.389e-02  -0.124 0.901110    
-## WorkLifeBalance.L                 6.076e-01  1.236e-01   4.914 1.01e-06 ***
-## WorkLifeBalance.Q                -3.009e-01  1.100e-01  -2.735 0.006320 ** 
-## WorkLifeBalance.C                 3.188e-01  8.288e-02   3.847 0.000125 ***
-## WorkLifeBalance^4                -1.929e-01  6.761e-02  -2.853 0.004403 ** 
-## Salary                            5.804e-07  5.997e-07   0.968 0.333351    
-## ManagerRatingNumeric             -1.489e-02  3.320e-02  -0.448 0.653873    
-## ---
-## Signif. codes:  0 &#39;***&#39; 0.001 &#39;**&#39; 0.01 &#39;*&#39; 0.05 &#39;.&#39; 0.1 &#39; &#39; 1
-## 
-## Residual standard error: 1.14 on 1258 degrees of freedom
-## Multiple R-squared:  0.03482,    Adjusted R-squared:  0.01871 
-## F-statistic: 2.161 on 21 and 1258 DF,  p-value: 0.001775
-## 
-## 
-## Coefficients (Tidy):
-## # A tibble: 22 × 7
-##    term                 estimate std.error statistic  p.value conf.low conf.high
-##    &lt;chr&gt;                   &lt;dbl&gt;     &lt;dbl&gt;     &lt;dbl&gt;    &lt;dbl&gt;    &lt;dbl&gt;     &lt;dbl&gt;
-##  1 (Intercept)           3.23      0.273      11.8   1.02e-30   2.69     3.76   
-##  2 Age                  -0.00682   0.00528    -1.29  1.97e- 1  -0.0172   0.00354
-##  3 OverTimeYes           0.0319    0.0712      0.448 6.55e- 1  -0.108    0.171  
-##  4 JobRoleData Scienti…  0.220     0.244       0.904 3.66e- 1  -0.258    0.698  
-##  5 JobRoleEngineering …  0.162     0.218       0.742 4.58e- 1  -0.266    0.590  
-##  6 JobRoleHR Business … -0.778     0.539      -1.44  1.49e- 1  -1.84     0.280  
-##  7 JobRoleHR Executive   0.220     0.319       0.689 4.91e- 1  -0.406    0.845  
-##  8 JobRoleHR Manager     0.333     0.682       0.488 6.26e- 1  -1.01     1.67   
-##  9 JobRoleMachine Lear…  0.0639    0.230       0.278 7.81e- 1  -0.387    0.515  
-## 10 JobRoleManager        0.220     0.263       0.839 4.02e- 1  -0.295    0.736  
-## # ℹ 12 more rows
-## 
-## Interpretation: Look for significant predictors (p &lt; 0.05).
-## - Estimate shows change in numeric satisfaction score per unit change in predictor.
-## - Interpret cautiously due to ordinal nature of outcome.
-## - Adjusted R-squared indicates proportion of variance explained.</code></pre>
+## Error fitting Ordinal Logistic Regression model: could not find function &quot;polr&quot; 
+## Ordinal Logistic Regression model could not be fitted.</code></pre>
 </div>
 </div>
 
