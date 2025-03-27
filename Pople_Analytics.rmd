@@ -1,0 +1,673 @@
+---
+title: "Untitled"
+author: "Di"
+date: "2025-03-26"
+output: 
+  html_document:
+    df_print: paged
+    code_folding: show
+    toc: true
+    toc_float: true
+    toc_depth: 4
+    number_sections: true
+    theme: simplex
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, error = FALSE, message = FALSE, warning = FALSE)
+```
+
+# Introduction
+
+This report provides a statistical analysis of employee data to understand key factors influencing attrition, performance, and satisfaction. We leverage two primary datasets: one detailing employee demographic and job information, and another containing performance review data over time. The analysis follows a structured approach, focusing on statistical testing and modeling to derive actionable insights.
+
+```{r}
+# Load libraries
+library(readr)
+library(dplyr)
+library(lubridate) # For handling dates
+library(tidyr)     # For data manipulation like pivot_wider
+library(broom)     # For tidying model outputs
+library(car)
+library(MASS)
+library(lmtest)
+```
+
+
+
+## Data Loading
+
+```{r}
+employee_data <- read.csv("Employee.csv")
+performance_rating_data <- read_csv("PerformanceRating.csv", show_col_types = FALSE)
+
+rating_levels <- read.csv("RatingLevel.csv")
+satisfaction_levels <- read.csv("SatisfiedLevel.csv")
+education_levels <- read.csv("EducationLevel.csv")
+```
+
+
+## Data Cleaning and Merging
+
+```{r}
+
+# Convert date columns 
+employee_data <- employee_data %>%
+  mutate(HireDate = as.Date(HireDate, format = "%m/%d/%Y"))
+
+performance_rating_data <- performance_rating_data %>%
+  mutate(ReviewDate = as.Date(ReviewDate, format = "%m/%d/%Y"))
+
+# Get the most recent review per employee
+latest_performance <- performance_rating_data %>%
+  arrange(EmployeeID, desc(ReviewDate)) %>%
+  distinct(EmployeeID, .keep_all = TRUE)
+
+# Merge data. This keeps all 1470 employees; those without performance data will have NA for performance fields
+combined_data <- employee_data %>%
+  left_join(latest_performance, by = "EmployeeID") %>%
+  # Join lookup tables using the correct ID columns
+  left_join(education_levels, by = c("Education" = "EducationLevelID")) %>%
+  left_join(satisfaction_levels, by = c("EnvironmentSatisfaction" = "SatisfactionID")) %>%
+  rename(EnvironmentSatisfactionLevel = SatisfactionLevel) %>%
+  left_join(satisfaction_levels, by = c("JobSatisfaction" = "SatisfactionID")) %>%
+  rename(JobSatisfactionLevel = SatisfactionLevel) %>%
+  left_join(satisfaction_levels, by = c("RelationshipSatisfaction" = "SatisfactionID")) %>%
+  rename(RelationshipSatisfactionLevel = SatisfactionLevel) %>%
+  left_join(rating_levels, by = c("SelfRating" = "RatingID")) %>%
+  rename(SelfRatingLevel = RatingLevel) %>%
+  left_join(rating_levels, by = c("ManagerRating" = "RatingID")) %>%
+  rename(ManagerRatingLevel = RatingLevel)
+
+# Convert relevant columns to factors for modeling
+combined_data <- combined_data %>%
+  mutate(
+    Gender = factor(Gender),
+    BusinessTravel = factor(BusinessTravel),
+    Department = factor(Department),
+    Ethnicity = factor(Ethnicity),
+    EducationField = factor(EducationField),
+    JobRole = factor(JobRole),
+    MaritalStatus = factor(MaritalStatus),
+    OverTime = factor(OverTime),
+    # Ensure 'Yes' is the second level for logistic regression interpretation (odds of 'Yes')
+    Attrition = factor(Attrition, levels = c("No", "Yes")),
+    # Use ordered factors for variables with inherent order
+    EducationLevel = factor(EducationLevel, levels = c("No Formal Qualifications", "High School", "Bachelors", "Masters", "Doctorate"), ordered = TRUE),
+    StockOptionLevel = factor(StockOptionLevel, ordered = TRUE),
+    EnvironmentSatisfaction = factor(EnvironmentSatisfaction, ordered = TRUE),
+    JobSatisfaction = factor(JobSatisfaction, ordered = TRUE),
+    RelationshipSatisfaction = factor(RelationshipSatisfaction, ordered = TRUE),
+    WorkLifeBalance = factor(WorkLifeBalance, ordered = TRUE),
+    SelfRating = factor(SelfRating, ordered = TRUE),
+    ManagerRating = factor(ManagerRating, ordered = TRUE)
+    )
+
+# Create numeric versions for analyses treating them as continuous/pseudo-continuous
+combined_data <- combined_data %>%
+  mutate(
+    ManagerRatingNumeric = as.numeric(ManagerRating),
+    JobSatisfactionNumeric = as.numeric(JobSatisfaction),
+    EnvironmentSatisfactionNumeric = as.numeric(EnvironmentSatisfaction),
+    WorkLifeBalanceNumeric = as.numeric(WorkLifeBalance)
+  )
+
+
+# Summary of the final dataset
+unique_employees_in_performance <- n_distinct(performance_rating_data$EmployeeID)
+total_employees <- nrow(employee_data)
+employees_without_performance <- total_employees - unique_employees_in_performance
+
+print(paste("Number of unique EmployeeIDs in performance_data:", unique_employees_in_performance))
+print(paste("Number of rows (employees) in employee_data:", total_employees))
+print(paste("Number of employees in employee_data WITHOUT records in performance_data:", employees_without_performance))
+
+```
+
+
+# Attrition Analysis
+
+## Statistical Tests (Group Comparisons)
+
+We use t-tests (for numeric variables, assuming approximate normality or large sample size) or Wilcoxon tests (non-parametric alternative), and Chi-squared tests (for categorical variables) to compare employees who attrited versus those who did not.
+
+```{r}
+# Define fixed variables for demonstration instead of using Shiny inputs
+num_var_attr_fixed <- "Salary"
+cat_var_attr_fixed <- "OverTime"
+
+# --- Numeric/Ordinal Test ---
+cat("\n--- Test for Numeric Variable:", num_var_attr_fixed, "---\n")
+if (!is.null(num_var_attr_fixed) && num_var_attr_fixed %in% names(combined_data) && is.numeric(combined_data[[num_var_attr_fixed]])) {
+    formula_num <- as.formula(paste(num_var_attr_fixed, "~ Attrition"))
+
+    # Perform t-test (Welch's)
+    t_test_result <- tryCatch({
+        t.test(formula_num, data = combined_data, var.equal = FALSE)
+    }, error = function(e) NULL)
+
+    if (!is.null(t_test_result)) {
+        cat(paste("--- Welch's T-Test for", num_var_attr_fixed, "by Attrition ---\n"))
+        print(tidy(t_test_result))
+
+        # Calculate and print means
+        means <- combined_data %>%
+            filter(!is.na(Attrition) & !is.na(.data[[num_var_attr_fixed]])) %>%
+            group_by(Attrition) %>%
+            summarise(Mean = mean(.data[[num_var_attr_fixed]], na.rm = TRUE), N = n(), .groups = 'drop')
+        cat("\nGroup Means:\n")
+        print(means)
+
+    } else {
+        cat(paste("Could not perform t-test for", num_var_attr_fixed, ". Attempting Wilcoxon test...\n"))
+        wilcox_result <- tryCatch({
+            wilcox.test(formula_num, data = combined_data)
+        }, error = function(e) NULL)
+        if (!is.null(wilcox_result)){
+            cat(paste("\n--- Wilcoxon Rank Sum Test for", num_var_attr_fixed, "by Attrition ---\n"))
+            print(tidy(wilcox_result))
+        } else {
+            cat(paste("Could not perform Wilcoxon test for", num_var_attr_fixed, "either.\n"))
+        }
+    }
+    cat("\n") # Add spacing
+} else {
+    cat(paste("Selected numeric variable", num_var_attr_fixed, "not found or not suitable for testing.\n\n"))
+}
+
+# --- Categorical Test ---
+cat("\n--- Test for Categorical Variable:", cat_var_attr_fixed, "---\n")
+if (!is.null(cat_var_attr_fixed) && cat_var_attr_fixed %in% names(combined_data) && (is.factor(combined_data[[cat_var_attr_fixed]]) || is.character(combined_data[[cat_var_attr_fixed]]))) {
+    cat(paste("\n--- Chi-Squared Test for", cat_var_attr_fixed, "by Attrition ---\n"))
+    # Create contingency table
+    cont_table <- tryCatch({
+        table(combined_data[[cat_var_attr_fixed]], combined_data$Attrition, useNA = "no")
+    }, error = function(e) NULL)
+
+    if (is.null(cont_table) || nrow(cont_table) < 2 || ncol(cont_table) < 2) {
+        cat("Could not create valid contingency table.\n")
+    } else {
+        # Perform Chi-squared test
+        chisq_result <- tryCatch({
+            chisq.test(cont_table, simulate.p.value = TRUE) # Simulate p-value for robustness
+        }, error = function(e) NULL)
+
+        if (!is.null(chisq_result)) {
+            cat("Contingency Table (excluding NAs):\n")
+            print(cont_table)
+            cat("\nTest Result (with simulated p-value if needed):\n")
+            print(tidy(chisq_result))
+            # Check expected counts warning
+            if(any(chisq_result$expected < 5)) {
+                cat("\nWarning: Expected counts < 5 exist, Chi-squared approximation may be inaccurate (simulation used).\n")
+            }
+        } else {
+            cat(paste("Could not perform Chi-Squared test for", cat_var_attr_fixed, ".\n"))
+        }
+    }
+ } else {
+     cat(paste("\nSelected categorical variable", cat_var_attr_fixed, "not found or not a factor/character.\n"))
+ }
+```
+
+## Logistic Regression Model
+
+We build a logistic regression model to predict the probability of attrition based on multiple factors simultaneously.
+
+
+```{r attrition-logistic-regression-corrected-masking}
+# Define fixed predictors for demonstration
+selected_preds_attr_fixed <- c("Age", "OverTime", "JobSatisfaction", "Salary", "YearsAtCompany", "MaritalStatus", "DistanceFromHome..KM.", "EnvironmentSatisfaction")
+
+# Ensure these predictors exist in the data
+valid_predictors_attr_fixed <- intersect(selected_preds_attr_fixed, names(combined_data))
+
+if (length(valid_predictors_attr_fixed) == 0) {
+    cat("None of the selected fixed predictors exist in the data.")
+} else {
+    # Create the formula string dynamically
+    formula_str_attr <- paste("Attrition ~", paste(valid_predictors_attr_fixed, collapse = " + "))
+    formula_obj_attr <- as.formula(formula_str_attr)
+
+    cat("--- Logistic Regression Model for Attrition ---\n")
+    cat("Formula:", formula_str_attr, "\n\n")
+
+    # CORRECTED AGAIN: Explicitly use dplyr::select to avoid masking
+    model_data_attr <- combined_data %>%
+        # Use dplyr::select explicitly
+        dplyr::select(any_of(c("Attrition", valid_predictors_attr_fixed))) %>%
+        na.omit() # Remove rows with NA in *any* selected column
+
+    if(nrow(model_data_attr) == 0) {
+        cat("No complete cases found for the selected predictors and outcome. Cannot fit model.\n")
+    } else {
+        cat(paste("Fitting model using", nrow(model_data_attr), "complete observations.\n\n"))
+
+        # Fit the model
+        logistic_model_attr <- tryCatch({
+            # Use the filtered model_data_attr which only contains necessary columns
+            glm(formula_obj_attr, data = model_data_attr, family = binomial(link = "logit"))
+        }, error = function(e) {
+            cat("Error fitting model:", conditionMessage(e), "\n")
+            NULL
+        })
+
+        if (!is.null(logistic_model_attr)) {
+            # Print model summary
+            cat("Model Summary:\n")
+            print(summary(logistic_model_attr))
+
+            # Print tidy coefficients with Odds Ratios
+            cat("\nCoefficients (Tidy) with Odds Ratios:\n")
+            tidy_coeffs <- tidy(logistic_model_attr, conf.int = TRUE, exponentiate = TRUE)
+            print(tidy_coeffs)
+
+            cat("\nInterpretation of Odds Ratios (exp(estimate)):\n")
+            cat("- OR > 1: Odds of Attrition ('Yes') increase.\n")
+            cat("- OR < 1: Odds of Attrition ('Yes') decrease.\n")
+            cat("- Confidence interval includes 1: Not statistically significant (p > 0.05).\n")
+
+            cat("\nAIC:", AIC(logistic_model_attr), "\n")
+
+        } else {
+            cat("Model could not be fitted with the selected predictors.\n")
+        }
+    }
+}
+```
+
+# Performance Analysis
+
+## Correlation Analysis
+
+Examine correlations between satisfaction metrics, work-life balance, training, and manager ratings.
+
+```{r performance-correlation-spearman-corrected-masking}
+# Data preparation remains the same, selecting numeric/pseudo-numeric versions
+corr_data_perf <- combined_data %>%
+  mutate(
+     SelfRatingNumeric = as.numeric(SelfRating) # Convert for correlation if desired
+     ) %>%
+  # Explicitly use dplyr::select
+  dplyr::select(any_of(c("ManagerRatingNumeric", "SelfRatingNumeric", "JobSatisfactionNumeric",
+                  "EnvironmentSatisfactionNumeric", "RelationshipSatisfactionNumeric",
+                  "WorkLifeBalanceNumeric", "TrainingOpportunitiesTaken", "Salary",
+                  "YearsAtCompany", "YearsInMostRecentRole", "Age", "DistanceFromHome..KM."))) %>%
+  # Keep select_if for now, though superseded by `where()` or `across()`
+  select_if(is.numeric)
+
+valid_corr_vars <- names(corr_data_perf)
+
+# Define fixed variables for correlation matrix
+selected_vars_corr_fixed <- intersect(c("ManagerRatingNumeric", "JobSatisfactionNumeric", "EnvironmentSatisfactionNumeric", "WorkLifeBalanceNumeric", "YearsAtCompany", "Salary"), valid_corr_vars)
+
+if (length(selected_vars_corr_fixed) < 2) {
+    cat("Need at least two valid variables for correlation.")
+} else {
+    # Ensure selected variables exist in the numeric dataset
+    # Base R subsetting is not affected by masking
+    selected_data_corr <- corr_data_perf[, selected_vars_corr_fixed, drop = FALSE]
+
+    # Calculate Spearman's rank correlation matrix
+    # Handles missing data pair-wise and uses ranks (suitable for ordinal)
+    cor_matrix <- cor(selected_data_corr, use = "pairwise.complete.obs", method = "spearman")
+
+    cat("--- Spearman's Rank Correlation Matrix (rho) ---\n")
+    cat("Variables:", paste(selected_vars_corr_fixed, collapse=", "), "\n\n")
+    print(round(cor_matrix, 3))
+
+    cat("\nInterpretation: Spearman's rho measures the strength and direction of monotonic association between variables.\n")
+    cat("Values close to 1 indicate strong positive monotonic relationship, close to -1 strong negative monotonic relationship, close to 0 weak monotonic relationship.\n")
+}
+```
+
+## Ordinal Logistic Regression Model for Manager Rating
+
+Build an ordinal logistic regression model to predict the ordered ManagerRating based on potential influencing factors. This is more appropriate than linear regression for an ordinal outcome.
+
+```{r performance-ordinal-regression-corrected-masking}
+# Ensure the outcome variable is the original ordered factor
+outcome_var_perf_ord <- "ManagerRating"
+
+# Define fixed predictors (use original factors where appropriate)
+selected_preds_perf_ord_fixed <- intersect(c("JobSatisfaction", "EnvironmentSatisfaction", "WorkLifeBalance", "YearsAtCompany", "SelfRating", "TrainingOpportunitiesTaken"), names(combined_data))
+
+if (length(selected_preds_perf_ord_fixed) == 0) {
+    cat("No valid fixed predictors found for the Manager Rating model.")
+# Ensure the outcome variable is an ordered factor
+} else if (!outcome_var_perf_ord %in% names(combined_data) || !is.ordered(combined_data[[outcome_var_perf_ord]])) {
+    cat("Outcome variable '", outcome_var_perf_ord, "' not found or is not an ordered factor.")
+} else {
+    # Create formula using the original ORDERED factor as the outcome
+    formula_str_perf_ord <- paste(outcome_var_perf_ord, "~", paste(selected_preds_perf_ord_fixed, collapse = " + "))
+    formula_obj_perf_ord <- as.formula(formula_str_perf_ord)
+
+    cat("--- Ordinal Logistic Regression Model for Manager Rating ---\n")
+    cat("Formula:", formula_str_perf_ord, "\n\n")
+
+    # CORRECTED AGAIN: Filter data using dplyr::select explicitly
+    model_data_perf_ord <- combined_data %>%
+        # Explicitly call dplyr::select
+        dplyr::select(all_of(c(outcome_var_perf_ord, selected_preds_perf_ord_fixed))) %>%
+        na.omit() # Remove rows with NA in any selected column
+
+    # Ensure sufficient data and levels in the outcome
+    if(nrow(model_data_perf_ord) == 0) {
+        cat("No complete cases found for the selected variables. Cannot fit model.\n")
+    } else if (nlevels(model_data_perf_ord[[outcome_var_perf_ord]]) < 2) {
+        cat("Outcome variable has fewer than 2 levels after removing NAs. Cannot fit model.\n")
+    } else {
+        cat(paste("Fitting model using", nrow(model_data_perf_ord), "complete observations.\n\n"))
+
+        # Fit the Ordinal Logistic Regression model using polr from MASS package
+        # Hess=TRUE is needed to calculate standard errors for summary/coeftest
+        polr_model_perf <- tryCatch({
+            polr(formula_obj_perf_ord, data = model_data_perf_ord, Hess = TRUE)
+        }, warning = function(w){ # Catch warnings e.g. about design matrix
+            cat("Warning during model fitting:", conditionMessage(w), "\n")
+            # Attempt to fit anyway
+            suppressWarnings(polr(formula_obj_perf_ord, data = model_data_perf_ord, Hess = TRUE))
+        }, error = function(e) {
+            cat("Error fitting Ordinal Logistic Regression model:", conditionMessage(e), "\n")
+            NULL
+        })
+
+        if (!is.null(polr_model_perf)) {
+            cat("Model Summary (Coefficients are log-odds):\n")
+            # summary() gives coefficients (log-odds) and intercepts (cut-points)
+            print(summary(polr_model_perf))
+
+            cat("\nCoefficients with Standard Errors and P-values (from coeftest):\n")
+            # Use coeftest from lmtest package for p-values
+            coeffs_test <- tryCatch(coeftest(polr_model_perf), error = function(e) NULL)
+            if (!is.null(coeffs_test)) {
+               print(coeffs_test)
+            } else {
+               cat("Could not calculate p-values using coeftest.\n")
+            }
+
+
+            cat("\nOdds Ratios (Exponentiated Coefficients):\n")
+            # Use tidy with exponentiate = TRUE for Odds Ratios
+            tidy_coeffs_or <- tidy(polr_model_perf, exponentiate = TRUE, conf.int = TRUE)
+            print(tidy_coeffs_or)
+
+            cat("\nInterpretation of Odds Ratios (OR):\n")
+            cat("- OR > 1: For a one-unit increase in the predictor (or for the specific factor level vs reference), the odds of being in a *higher* Manager Rating category (vs. all lower categories combined) increase by a factor of OR, holding other predictors constant.\n")
+            cat("- OR < 1: The odds of being in a *higher* Manager Rating category decrease.\n")
+            cat("- Confidence interval includes 1: Predictor is likely not statistically significant (check p-value from coeftest).\n")
+            cat("- Intercepts (zeta coefficients) define the boundaries between rating categories on the log-odds scale.\n")
+            cat("\nAIC:", AIC(polr_model_perf), "\n")
+
+        } else {
+            cat("Ordinal Logistic Regression model could not be fitted.\n")
+        }
+    }
+}
+```
+
+## Comparing Ratings/Satisfaction Across Groups (ANOVA)
+
+Use Analysis of Variance (ANOVA) to test if the average manager rating (or satisfaction scores) differs significantly across different groups (e.g., Departments, Job Roles).
+
+```{r}
+# Define fixed variables for ANOVA
+outcome_anova_perf_fixed <- "ManagerRatingNumeric"
+group_anova_perf_fixed <- "Department"
+
+# Checks
+if (!outcome_anova_perf_fixed %in% names(combined_data) || !group_anova_perf_fixed %in% names(combined_data)) {
+    cat("Selected variable(s) for ANOVA not found in the data.\n")
+} else if (!is.numeric(combined_data[[outcome_anova_perf_fixed]])) {
+    cat(paste("Outcome variable", outcome_anova_perf_fixed, "is not numeric.\n"))
+} else if (!is.factor(combined_data[[group_anova_perf_fixed]]) && !is.character(combined_data[[group_anova_perf_fixed]])) {
+    cat(paste("Grouping variable", group_anova_perf_fixed, "is not categorical.\n"))
+} else {
+    formula_anova_perf <- as.formula(paste(outcome_anova_perf_fixed, "~", group_anova_perf_fixed))
+
+    cat(paste("--- ANOVA for", outcome_anova_perf_fixed, "by", group_anova_perf_fixed, "---\n"))
+    cat("Formula:", deparse(formula_anova_perf), "\n\n")
+
+    # Filter data
+    anova_data_perf <- combined_data %>%
+        select(all_of(c(outcome_anova_perf_fixed, group_anova_perf_fixed))) %>%
+        na.omit()
+
+    # Check data sufficiency
+    if (length(unique(anova_data_perf[[group_anova_perf_fixed]])) < 2) {
+        cat("Grouping variable has fewer than 2 levels with data. Cannot perform ANOVA.\n")
+    } else if (nrow(anova_data_perf) == 0) {
+        cat("No complete observations for this combination of variables.\n")
+    } else {
+        min_group_size <- tryCatch(min(table(anova_data_perf[[group_anova_perf_fixed]])), error=function(e) 0)
+        if (min_group_size < 2) {
+             cat("Warning: At least one group has fewer than 2 observations. ANOVA results may be unreliable.\n")
+        }
+        cat(paste("Performing ANOVA using", nrow(anova_data_perf), "complete observations.\n\n"))
+
+        # Perform ANOVA using lm and car::Anova
+        anova_model_perf <- tryCatch({
+            lm_for_anova <- lm(formula_anova_perf, data = anova_data_perf)
+            Anova(lm_for_anova, type = "II")
+        }, error = function(e) {
+            cat("Error fitting ANOVA model:", conditionMessage(e), "\n")
+            NULL
+        })
+
+        if (!is.null(anova_model_perf)) {
+            cat("ANOVA Summary (Type II SS):\n")
+            print(anova_model_perf)
+
+            p_value <- tryCatch(anova_model_perf[group_anova_perf_fixed, "Pr(>F)"], error = function(e) NA)
+
+            if (!is.na(p_value) && p_value < 0.05) {
+                cat(paste("\nSignificant difference found across groups (p =", format.pval(p_value, digits = 3), ").\n"))
+
+                # Perform post-hoc test if significant AND more than 2 groups
+                if (length(unique(anova_data_perf[[group_anova_perf_fixed]])) > 2) {
+                    cat("Performing post-hoc tests (Tukey HSD)...\n")
+                    aov_model_for_tukey <- tryCatch(aov(formula_anova_perf, data = anova_data_perf), error = function(e) NULL)
+                    if (!is.null(aov_model_for_tukey)) {
+                        tukey_result <- tryCatch({ TukeyHSD(aov_model_for_tukey, which = group_anova_perf_fixed) }, error = function(e) NULL)
+
+                        if(!is.null(tukey_result)){
+                            tidy_tukey <- tidy(tukey_result)
+                            significant_tukey <- tidy_tukey %>% filter(adj.p.value < 0.05)
+                            if (nrow(significant_tukey) > 0) {
+                                print(significant_tukey)
+                                cat("\nAbove table shows specific group pairs that differ significantly (adj.p.value < 0.05).\n")
+                            } else {
+                                cat("\nNo specific group pairs found to be significantly different after adjustment.\n")
+                            }
+                        } else {
+                            cat("Could not perform Tukey HSD post-hoc test.\n")
+                        }
+                    } else {
+                        cat("Could not create model required for Tukey HSD.\n")
+                    }
+                }
+            } else if (!is.na(p_value)) {
+                cat(paste("\nNo significant difference found across groups (p =", format.pval(p_value, digits = 3), ").\n"))
+            } else {
+                cat("\nCould not determine significance (p-value missing or error).\n")
+            }
+        } else {
+            cat("ANOVA model could not be fitted.\n")
+        }
+    }
+}
+```
+
+# Satisfaction Analysis
+
+## Comparing Satisfaction Across Groups (ANOVA)
+
+Use Analysis of Variance (ANOVA) to test if average satisfaction scores differ significantly across different categorical groups (e.g., Department, Job Role, OverTime status).
+
+```{r}
+# Define fixed variables for Satisfaction ANOVA
+outcome_anova_satisfaction_fixed <- "JobSatisfactionNumeric"
+group_anova_satisfaction_fixed <- "JobRole"
+
+# Checks
+if (!outcome_anova_satisfaction_fixed %in% names(combined_data) || !group_anova_satisfaction_fixed %in% names(combined_data)) {
+    cat("Selected variable(s) for Satisfaction ANOVA not found.\n")
+} else if (!is.numeric(combined_data[[outcome_anova_satisfaction_fixed]])) {
+    cat(paste("Outcome variable", outcome_anova_satisfaction_fixed, "is not numeric.\n"))
+} else if (!is.factor(combined_data[[group_anova_satisfaction_fixed]]) && !is.character(combined_data[[group_anova_satisfaction_fixed]])) {
+    cat(paste("Grouping variable", group_anova_satisfaction_fixed, "is not categorical.\n"))
+} else {
+
+    formula_anova_satisfaction <- as.formula(paste(outcome_anova_satisfaction_fixed, "~", group_anova_satisfaction_fixed))
+
+    cat(paste("--- ANOVA for", outcome_anova_satisfaction_fixed, "by", group_anova_satisfaction_fixed, "---\n"))
+    cat("Formula:", deparse(formula_anova_satisfaction), "\n\n")
+
+    # Filter data
+    anova_data_satisfaction <- combined_data %>%
+        select(all_of(c(outcome_anova_satisfaction_fixed, group_anova_satisfaction_fixed))) %>%
+        na.omit()
+
+    # Check data sufficiency
+    if (length(unique(anova_data_satisfaction[[group_anova_satisfaction_fixed]])) < 2) {
+        cat("Grouping variable has fewer than 2 levels with data. Cannot perform ANOVA.\n")
+    } else if (nrow(anova_data_satisfaction) == 0) {
+        cat("No complete observations for this combination.\n")
+    } else {
+        min_group_size <- tryCatch(min(table(anova_data_satisfaction[[group_anova_satisfaction_fixed]])), error=function(e) 0)
+        if (min_group_size < 2) {
+             cat("Warning: At least one group has fewer than 2 observations.\n")
+        }
+        cat(paste("Performing ANOVA using", nrow(anova_data_satisfaction), "complete observations.\n\n"))
+
+        # Perform ANOVA
+        anova_model_satisfaction <- tryCatch({
+            lm_for_anova_sat <- lm(formula_anova_satisfaction, data = anova_data_satisfaction)
+            Anova(lm_for_anova_sat, type = "II")
+        }, error = function(e) {
+            cat("Error fitting ANOVA model:", conditionMessage(e), "\n")
+            NULL
+        })
+
+        if (!is.null(anova_model_satisfaction)) {
+            cat("ANOVA Summary (Type II SS):\n")
+            print(anova_model_satisfaction)
+
+            p_value_sat <- tryCatch(anova_model_satisfaction[group_anova_satisfaction_fixed,"Pr(>F)"], error=function(e) NA)
+
+            if (!is.na(p_value_sat) && p_value_sat < 0.05) {
+                cat(paste("\nSignificant difference in", outcome_anova_satisfaction_fixed, "found across groups (p =", format.pval(p_value_sat, digits=3), ").\n"))
+
+                if (length(unique(anova_data_satisfaction[[group_anova_satisfaction_fixed]])) > 2) {
+                    cat("Performing post-hoc tests (Tukey HSD)...\n")
+                    aov_model_for_tukey_sat <- tryCatch(aov(formula_anova_satisfaction, data = anova_data_satisfaction), error = function(e) NULL)
+                    if (!is.null(aov_model_for_tukey_sat)) {
+                        tukey_result_sat <- tryCatch({ TukeyHSD(aov_model_for_tukey_sat, which = group_anova_satisfaction_fixed) }, error = function(e) NULL)
+
+                        if(!is.null(tukey_result_sat)){
+                            tidy_tukey_sat <- tidy(tukey_result_sat)
+                            significant_tukey_sat <- tidy_tukey_sat %>% filter(adj.p.value < 0.05)
+                            if (nrow(significant_tukey_sat) > 0) {
+                                print(significant_tukey_sat)
+                                cat("\nAbove table shows specific group pairs that differ significantly in", outcome_anova_satisfaction_fixed, "(adj.p.value < 0.05).\n")
+                            } else {
+                                cat("\nNo specific group pairs found to be significantly different after adjustment.\n")
+                            }
+                        } else {
+                            cat("Could not perform Tukey HSD post-hoc test.\n")
+                        }
+                    } else {
+                        cat("Could not create model required for Tukey HSD.\n")
+                    }
+                }
+            } else if (!is.na(p_value_sat)) {
+                cat(paste("\nNo significant difference in", outcome_anova_satisfaction_fixed, "found across groups (p =", format.pval(p_value_sat, digits=3), ").\n"))
+            } else {
+                 cat("\nCould not determine significance (p-value missing or error).\n")
+            }
+
+        } else {
+            cat("ANOVA model could not be fitted.\n")
+        }
+    }
+}
+```
+
+
+## Ordinal Logistic Regression Model for Satisfaction
+
+Model a selected satisfaction metric (which is ordinal) based on multiple predictors using Ordinal Logistic Regression. 
+
+```{r satisfaction-ordinal-regression}
+# Define fixed outcome (use the original ORDERED factor)
+selected_outcome_sat_ord_fixed <- "JobSatisfaction" # e.g., JobSatisfaction, EnvironmentSatisfaction, RelationshipSatisfaction
+
+# Define fixed predictors (Using ManagerRating factor instead of numeric)
+selected_preds_sat_ord_fixed <- intersect(c("Age", "OverTime", "JobRole", "YearsWithCurrManager", "WorkLifeBalance", "Salary", "ManagerRating"), names(combined_data)) # Use ManagerRating factor
+
+# Checks
+if (length(selected_preds_sat_ord_fixed) == 0) {
+    cat("No valid fixed predictors found for the Satisfaction model.")
+# Check if outcome exists and is an ordered factor
+} else if (!selected_outcome_sat_ord_fixed %in% names(combined_data) || !is.ordered(combined_data[[selected_outcome_sat_ord_fixed]])) {
+    cat(paste("Outcome variable '", selected_outcome_sat_ord_fixed, "' not found or is not an ordered factor.\n"))
+} else {
+    # Create formula using the original ORDERED factor
+    formula_str_satisfaction_ord <- paste(selected_outcome_sat_ord_fixed, "~", paste(selected_preds_sat_ord_fixed, collapse = " + "))
+    formula_obj_satisfaction_ord <- as.formula(formula_str_satisfaction_ord)
+
+    cat(paste("--- Ordinal Logistic Regression Model for", selected_outcome_sat_ord_fixed, "---\n"))
+    cat("Formula:", formula_str_satisfaction_ord, "\n\n")
+
+    # Filter data for complete cases
+    model_data_satisfaction_ord <- combined_data %>%
+        select(all_of(c(selected_outcome_sat_ord_fixed, selected_preds_sat_ord_fixed))) %>%
+        na.omit()
+
+    # Check data sufficiency
+    if(nrow(model_data_satisfaction_ord) == 0) {
+        cat("No complete cases found for the selected variables. Cannot fit model.\n")
+     } else if (nlevels(model_data_satisfaction_ord[[selected_outcome_sat_ord_fixed]]) < 2) {
+        cat("Outcome variable has fewer than 2 levels after removing NAs. Cannot fit model.\n")
+    } else {
+        cat(paste("Fitting model using", nrow(model_data_satisfaction_ord), "complete observations.\n\n"))
+
+        # Fit the Ordinal Logistic Regression model
+        polr_model_satisfaction <- tryCatch({
+            polr(formula_obj_satisfaction_ord, data = model_data_satisfaction_ord, Hess = TRUE)
+         }, warning = function(w){
+            cat("Warning during model fitting:", conditionMessage(w), "\n")
+            suppressWarnings(polr(formula_obj_satisfaction_ord, data = model_data_satisfaction_ord, Hess = TRUE))
+        }, error = function(e) {
+            cat("Error fitting Ordinal Logistic Regression model:", conditionMessage(e), "\n")
+            NULL
+        })
+
+        if (!is.null(polr_model_satisfaction)) {
+            cat("Model Summary (Coefficients are log-odds):\n")
+            print(summary(polr_model_satisfaction))
+
+            cat("\nCoefficients with Standard Errors and P-values (from coeftest):\n")
+            coeffs_test_sat <- tryCatch(coeftest(polr_model_satisfaction), error = function(e) NULL)
+             if (!is.null(coeffs_test_sat)) {
+               print(coeffs_test_sat)
+            } else {
+               cat("Could not calculate p-values using coeftest.\n")
+            }
+
+            cat("\nOdds Ratios (Exponentiated Coefficients):\n")
+            tidy_coeffs_or_sat <- tidy(polr_model_satisfaction, exponentiate = TRUE, conf.int = TRUE)
+            print(tidy_coeffs_or_sat)
+
+            cat("\nInterpretation of Odds Ratios (OR):\n")
+            cat("- OR > 1: Odds of being in a *higher* satisfaction category increase.\n")
+            cat("- OR < 1: Odds of being in a *higher* satisfaction category decrease.\n")
+            cat("- Confidence interval includes 1: Predictor likely not statistically significant (check p-value).\n")
+            cat("- Intercepts define boundaries between satisfaction categories (log-odds scale).\n")
+            cat("\nAIC:", AIC(polr_model_satisfaction), "\n")
+
+        } else {
+            cat("Ordinal Logistic Regression model could not be fitted.\n")
+        }
+    }
+}
